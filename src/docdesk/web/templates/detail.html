@@ -1,0 +1,59 @@
+{% extends "base.html" %}{% block title %}{{ d.original_filename }} - Document Desk{% endblock %}
+{% macro val(f) %}{% if f.status == 'absent' %}<span class="missing">not found in document</span>
+{%- elif f.status == 'invalid' %}<span class="bad">unreadable value</span> <code>{{ f.raw_value }}</code>
+{%- elif f.value is mapping %}{{ f.value }}
+{%- elif f.value is iterable and f.value is not string %}{% if f.value and f.value[0] is mapping %}<table>{% for it in f.value %}<tr>{% for k,v in it.items() %}<td class="small">{{ v if v is not none else '' }}</td>{% endfor %}</tr>{% endfor %}</table>{% else %}{{ f.value|join('; ') }}{% endif %}
+{%- elif f.value is none %}<span class="missing">-</span>{% else %}{{ f.value }}{% endif %}{% endmacro %}
+{% block body %}
+{% set res = d.result %}
+{% if res and res.provider.simulated %}<div class="banner">SIMULATED PROVIDER - this result came from a local simulation, not from Azure Content Understanding.</div>{% endif %}
+<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px"><h1 style="margin:0">{{ d.original_filename }}</h1>
+<span class="badge s-{{ d.status }}">{{ status_label(d.status) }}</span>{% if d.needs_review %}<span class="badge s-pending">Needs review</span>{% endif %}
+<span style="margin-left:auto"><a class="button" href="/api/documents/{{ d.document_id }}/original">Open original</a>
+<a href="/api/documents/{{ d.document_id }}/original?download=1">Download</a></span></div>
+
+{% if d.last_error_code and d.status in ('failed','rejected','upload_failed') %}
+<div class="card" style="border-color:#f5c2bd"><h2 class="bad">{{ status_label(d.status) }}: <code>{{ d.last_error_code }}</code></h2><p>{{ d.last_error_message }}</p>
+{% if d.status == 'failed' %}
+<form id="replay" class="small"><label>Replay from stage <select name="from_stage"><option value="">first failed stage (default)</option>{% for s in stages %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select></label>
+<input type="text" name="reason" placeholder="Reason (optional)" maxlength="300" style="width:260px"> <button type="submit" class="danger">Replay as new attempt</button>
+<span id="replay_msg" class="small"></span>
+<p class="muted small">Replay creates a new attempt. The failed attempt, its tries and any artifacts stay on record.</p></form>
+<script>document.getElementById('replay').addEventListener('submit',async e=>{e.preventDefault();const f=new FormData(e.target);const body={attempt_no:{{ d.current_attempt_no }},reason:f.get('reason')||null};if(f.get('from_stage'))body.from_stage=f.get('from_stage');
+const r=await fetch('/api/documents/{{ d.document_id }}/replay',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':document.querySelector('meta[name=csrf-token]').content},body:JSON.stringify(body),credentials:'same-origin'});
+const j=await r.json();const m=document.getElementById('replay_msg');if(r.ok){location.reload()}else{m.className='small bad';m.textContent=(j.error&&j.error.message)||'Replay failed'}});</script>
+{% endif %}</div>{% endif %}
+
+<div class="grid">
+<div class="card"><h2>Document</h2><dl class="kv"><dt>Document id</dt><dd><code>{{ d.document_id }}</code></dd><dt>Type</dt><dd>{{ d.content_type or '-' }}</dd><dt>Size</dt><dd>{{ d.size_bytes|fmtsize }}</dd>
+<dt>Pages</dt><dd>{{ d.page_count if d.page_count is not none else '-' }}</dd><dt>SHA-256</dt><dd><code class="small">{{ d.sha256 or '-' }}</code></dd><dt>Created</dt><dd>{{ d.created_at|short_ts }} UTC</dd><dt>Updated</dt><dd>{{ d.updated_at|short_ts }} UTC</dd>
+<dt>Retain until</dt><dd>{{ d.retain_until or '-' }} <span class="muted small">(informational)</span></dd></dl></div>
+<div class="card"><h2>Classification</h2>{% if res %}<dl class="kv"><dt>Category</dt><dd><strong>{{ category_label(res.category) }}</strong></dd><dt>Outcome</dt><dd>{{ class_label(res.classification_status) }}{% if res.category_provider_raw and res.category_provider_raw != res.category %} (provider said <code>{{ res.category_provider_raw }}</code>){% endif %}</dd>
+<dt>Confidence</dt><dd class="muted">not provided by the service</dd><dt>Provider</dt><dd>{{ res.provider.name }}</dd><dt>API version</dt><dd>{{ res.provider.api_version }}</dd>
+<dt>Analyzers</dt><dd><code class="small">{{ res.provider.classifier_analyzer_id }}</code>{% if res.provider.extractor_analyzer_id %}<br><code class="small">{{ res.provider.extractor_analyzer_id }}</code>{% endif %}</dd>
+<dt>Config version</dt><dd>{{ res.provider.config_version }} <code class="small">{{ (res.provider.config_hash or '')[:19] }}</code></dd><dt>Operation</dt><dd><code class="small">{{ res.provider.operation_id or '-' }}</code></dd><dt>Result schema</dt><dd>{{ res.schema_version }}</dd></dl>
+<p class="muted small">Classification is a model output and can be wrong. No accuracy is claimed.</p>{% else %}<p class="muted">No result yet{% if d.status in ('uploading','processing') %} - processing is under way{% endif %}.</p>{% endif %}</div>
+</div>
+
+{% if res %}
+{% if res.flags %}<div class="card"><h2>Review flags</h2><ul style="margin:0;padding-left:18px">{% for f in res.flags %}<li class="flag-{{ f.severity }}"><code>{{ f.code }}</code>{% if f.field %} ({{ field_label(f.field) }}){% endif %}: {{ f.message }}</li>{% endfor %}</ul></div>{% endif %}
+<div class="card"><h2>Extracted metadata</h2>
+{% if res.fields %}{% if res.category in ('msa','nda','sow','vendor_agreement') %}<p class="muted small">Clause text is an informational extract only - not a legal interpretation.</p>{% endif %}
+<table><thead><tr><th>Field</th><th>Value</th><th>Confidence</th><th>Source</th></tr></thead>{% for f in res.fields %}<tr><td>{{ field_label(f.name) }}</td><td>{{ val(f) }}</td>
+<td>{{ ('%.2f'|format(f.confidence)) if f.confidence is not none else '-' }}</td><td class="small muted">{{ f.source or '-' }}</td></tr>{% endfor %}</table>
+<p class="muted small">"Not found" means the service returned no value for the field. Confidence and source are shown only when the service provided them.</p>
+{% else %}<p class="muted">No type-specific fields are extracted for this outcome.</p>{% endif %}</div>
+<div class="card"><h2>Extracted text</h2>{% if text %}<pre>{{ text }}</pre>{% endif %}{% if text_note %}<p class="muted small">{{ text_note }}</p>{% endif %}{% if not text and not text_note %}<p class="missing">The provider returned no text for this document.</p>{% endif %}</div>
+{% endif %}
+
+<div class="card"><h2>Processing history</h2>
+{% for a in d.attempts|reverse %}<div style="margin-bottom:14px"><h3 style="margin:0 0 6px;font-size:15px">Attempt {{ a.attempt_no }} <span class="badge s-{{ a.status }}">{{ a.status }}</span>
+<span class="muted small">{{ 'initial upload' if a.trigger_kind == 'initial' else 'replay from ' ~ a.replay_from_stage }}{% if a.replay_reason %} - {{ a.replay_reason }}{% endif %} - started {{ a.created_at|short_ts }}</span></h3>
+<div class="timeline">{% for s in a.stages %}<div class="tl"><h3>{{ s.stage }}</h3><span class="badge s-{{ s.status }}">{{ s.status }}</span>
+<div class="small muted">{% if s.status == 'carried' %}reused from an earlier attempt{% else %}tries {{ s.tries }}/{{ s.max_tries }}{% if s.first_started_at %}<br>started {{ s.first_started_at|short_ts }}{% endif %}{% if s.completed_at %}<br>done {{ s.completed_at|short_ts }}{% endif %}{% if s.next_run_at and s.status == 'retry_wait' %}<br>retry at {{ s.next_run_at|short_ts }}{% endif %}{% endif %}</div>
+{% if s.last_error_code %}<div class="small bad"><code>{{ s.last_error_code }}</code><br>{{ s.last_error_message }}</div>{% endif %}
+{% if s.tries_detail %}<details><summary class="small">try history</summary><table>{% for t in s.tries_detail %}<tr><td class="small">#{{ t.try_no }}</td><td class="small"><span class="badge s-{{ t.outcome or 'running' }}">{{ t.outcome or 'running' }}</span></td><td class="small">{{ t.started_at|short_ts }}{% if t.error_code %}<br><code>{{ t.error_code }}</code>{% endif %}</td></tr>{% endfor %}</table></details>{% endif %}</div>{% endfor %}</div></div>{% endfor %}</div>
+
+<div class="card"><h2>Stored artifacts</h2>{% if artifacts %}<table><thead><tr><th>Kind</th><th>Attempt try</th><th>Size</th><th>Created</th><th></th></tr></thead>{% for a in artifacts %}<tr><td>{{ a.kind }}</td><td>{{ a.stage or '-' }} {{ a.try_no or '' }}</td><td>{{ a.size_bytes|fmtsize }}</td><td>{{ a.created_at|short_ts }}</td><td>{% if a.kind != 'original' %}<a href="/api/documents/{{ d.document_id }}/artifacts/{{ a.artifact_id }}">download</a>{% else %}<a href="/api/documents/{{ d.document_id }}/original?download=1">download</a>{% endif %}</td></tr>{% endfor %}</table>
+<p class="muted small">The provider response is the unmodified service output, retained for inspection.</p>{% else %}<p class="muted">None yet.</p>{% endif %}</div>
+{% endblock %}

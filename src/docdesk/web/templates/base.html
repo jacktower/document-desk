@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}Document Desk{% endblock %}</title>
+<meta name="csrf-token" content="{{ csrf }}">
+<style>{% include "_style.css" %}</style></head>
+<body>
+<header class="top"><span class="brand">Document Desk</span>
+{% if signed_in %}<a href="/">Documents</a><a href="/status">System status</a>
+<form method="post" action="/logout"><button type="submit">Sign out</button></form>{% endif %}</header>
+<main>{% block body %}{% endblock %}</main>
+</body></html>

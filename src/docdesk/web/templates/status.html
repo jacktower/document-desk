@@ -1,0 +1,12 @@
+{% extends "base.html" %}{% block title %}System status - Document Desk{% endblock %}
+{% block body %}<h1>System status</h1>
+<div class="grid">
+<div class="card"><h2>Checks run by the web app</h2><table>{% for k,v in diag.web_checks.items() %}<tr><td>{{ k }}</td><td><span class="badge s-{{ v.status }}">{{ v.status }}</span> {% if v.error_class %}<code>{{ v.error_class }}</code>{% endif %}</td></tr>{% endfor %}</table></div>
+<div class="card"><h2>Documents</h2><table>{% for k,v in (diag.documents_by_status or {}).items() %}<tr><td>{{ status_label(k) }}</td><td>{{ v }}</td></tr>{% else %}<tr><td class="muted">none</td></tr>{% endfor %}</table></div>
+<div class="card"><h2>Backlog</h2><dl class="kv"><dt>Oldest unpublished event</dt><dd>{{ diag.oldest_undispatched_outbox_s ~ ' s' if diag.oldest_undispatched_outbox_s is not none else 'none' }}</dd>
+<dt>Oldest waiting stage</dt><dd>{{ diag.oldest_runnable_stage_s ~ ' s' if diag.oldest_runnable_stage_s is not none else 'none' }}</dd><dt>Expired leases</dt><dd>{{ diag.expired_leases }}</dd></dl></div></div>
+<div class="card"><h2>Dependencies as seen by the worker</h2><p class="muted small">Written by the worker's probe loop every minute; a stale or missing row means no worker is running.</p>
+<table><thead><tr><th>Dependency</th><th>Status</th><th>Checked</th><th>Detail</th></tr></thead>{% for d in diag.worker_dependencies %}<tr><td>{{ d.name }}</td><td><span class="badge s-{{ d.status }}">{{ d.status }}</span></td><td>{{ d.checked_age_s }} s ago</td><td>{{ d.error_class or '' }} {{ d.detail or '' }}</td></tr>{% else %}<tr><td colspan="4" class="warn">No worker has reported yet.</td></tr>{% endfor %}</table></div>
+<div class="card"><h2>Workers</h2><table><thead><tr><th>Worker</th><th>Version</th><th>Started (UTC)</th><th>Last seen</th></tr></thead>{% for w in diag.workers %}<tr><td><code>{{ w.worker_id }}</code></td><td>{{ w.version }}</td><td>{{ w.started_at|short_ts }}</td><td>{{ w.last_seen_age_s }} s ago</td></tr>{% else %}<tr><td colspan="4" class="warn">No worker heartbeat recorded.</td></tr>{% endfor %}</table></div>
+<div class="card"><h2>Failed stages in the last 24 hours</h2><table>{% for f in diag.failed_stages_24h %}<tr><td><code>{{ f.error_code }}</code></td><td>{{ f.count }}</td></tr>{% else %}<tr><td class="muted">none</td></tr>{% endfor %}</table></div>
+{% endblock %}

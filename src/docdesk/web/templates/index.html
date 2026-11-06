@@ -1,0 +1,43 @@
+{% extends "base.html" %}{% block title %}Documents - Document Desk{% endblock %}
+{% block body %}
+<div class="card"><h2>Upload documents</h2>
+<div class="drop" id="drop"><p>Drop PDF or TIFF files here, or <label style="color:var(--accent);cursor:pointer">choose files<input id="pick" type="file" multiple accept=".pdf,.tif,.tiff,application/pdf,image/tiff" hidden></label></p>
+<p class="muted small">Nonconfidential documents only. PDF or TIFF, up to {{ max_mb }} MB each.</p></div>
+<ul id="uploads" style="list-style:none;padding:0"></ul></div>
+<div class="card"><div style="display:flex;gap:10px;align-items:center;margin-bottom:10px"><h2 style="margin:0">Documents</h2>
+<input type="search" id="q" placeholder="Filter by file name" style="margin-left:auto">
+<select id="statusf"><option value="">All statuses</option>{% for s in ["uploading","processing","completed","failed","rejected","upload_failed"] %}<option value="{{ s }}">{{ status_label(s) }}</option>{% endfor %}</select></div>
+<table><thead><tr><th>File</th><th>Status</th><th>Category</th><th>Attempt</th><th>Created (UTC)</th><th>Updated (UTC)</th></tr></thead>
+<tbody id="rows">{% for d in documents %}
+<tr><td><a href="/documents/{{ d.document_id }}">{{ d.original_filename }}</a></td><td><span class="badge s-{{ d.status }}">{{ status_label(d.status) }}</span>{% if d.needs_review %} <span class="warn small">needs review</span>{% endif %}</td>
+<td>{{ category_label(d.category) if d.category or d.status == 'completed' else '-' }}</td><td>{{ d.current_attempt_no or '-' }}</td><td>{{ d.created_at|short_ts }}</td><td>{{ d.updated_at|short_ts }}</td></tr>
+{% else %}<tr><td colspan="6" class="muted">No documents yet.</td></tr>{% endfor %}</tbody></table></div>
+<script>
+const csrf=document.querySelector('meta[name=csrf-token]').content;
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const LABEL={uploading:'Uploading',processing:'Processing',completed:'Completed',failed:'Failed',rejected:'Rejected',upload_failed:'Upload failed'};
+const CAT={invoice:'Invoice',receipt:'Receipt',purchase_order:'Purchase order',expense_report:'Expense report',bank_statement:'Bank statement',credit_card_statement:'Credit card statement',msa:'Master Service Agreement',nda:'Non-Disclosure Agreement',sow:'Statement of Work',vendor_agreement:'Vendor / service agreement',tax_document:'Tax document',certificate_of_insurance:'Certificate of insurance',other:'Other / unknown'};
+const ts=v=>v?v.replace('T',' ').replace('Z',''):'-';
+const TERMINAL=['completed','failed','rejected','upload_failed'];
+async function refresh(){
+  const p=new URLSearchParams({limit:50});const q=document.getElementById('q').value.trim(),s=document.getElementById('statusf').value;
+  if(q)p.set('q',q);if(s)p.set('status',s);
+  const r=await fetch('/api/documents?'+p,{credentials:'same-origin'});if(!r.ok)return;const data=await r.json();
+  document.getElementById('rows').innerHTML=data.items.map(d=>`<tr><td><a href="/documents/${d.document_id}">${esc(d.original_filename)}</a></td><td><span class="badge s-${d.status}">${LABEL[d.status]||esc(d.status)}</span>${d.needs_review?' <span class="warn small">needs review</span>':''}</td><td>${d.category?esc(CAT[d.category]||d.category):(d.status==='completed'?'Unclassified':'-')}</td><td>${d.current_attempt_no||'-'}</td><td>${ts(d.created_at)}</td><td>${ts(d.updated_at)}</td></tr>`).join('')||'<tr><td colspan="6" class="muted">No documents match.</td></tr>';
+  window._active=data.items.some(d=>!TERMINAL.includes(d.status));
+}
+setInterval(()=>{if(window._active!==false)refresh()},5000);document.getElementById('q').addEventListener('input',refresh);document.getElementById('statusf').addEventListener('change',refresh);
+async function send(file){
+  const li=document.createElement('li');li.textContent=file.name+' ...';document.getElementById('uploads').prepend(li);
+  const fd=new FormData();fd.append('file',file);
+  try{const r=await fetch('/api/documents',{method:'POST',body:fd,headers:{'X-CSRF-Token':csrf},credentials:'same-origin'});
+    const j=await r.json();
+    if(r.ok){li.innerHTML='<span class="ok">Accepted</span> '+esc(file.name)+' - <a href="/documents/'+j.document_id+'">open</a>';window._active=true;refresh();}
+    else{const e=j.error||j.detail||{};li.innerHTML='<span class="bad">Not accepted</span> '+esc(file.name)+': '+esc(e.message||('error '+r.status));}
+  }catch(e){li.innerHTML='<span class="bad">Upload failed</span> '+esc(file.name)+': network error';}
+}
+const drop=document.getElementById('drop'),pick=document.getElementById('pick');
+['dragover','dragenter'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.add('over')}));
+['dragleave','drop'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.remove('over')}));
+drop.addEventListener('drop',ev=>[...ev.dataTransfer.files].forEach(send));pick.addEventListener('change',()=>{[...pick.files].forEach(send);pick.value=''});
+</script>{% endblock %}

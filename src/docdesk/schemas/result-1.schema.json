@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docdesk.invalid/schemas/docdesk.result/1",
+  "title": "docdesk.result/1",
+  "description": "Normalized result of one processing attempt. Values are never invented: absent fields stay absent, confidence and source appear only when the provider returned them.",
+  "type": "object",
+  "required": ["schema_version", "document_id", "attempt_no", "generated_at", "provider", "classification", "text", "fields", "flags", "needs_review"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "docdesk.result/1"},
+    "result_id": {"type": "string"},
+    "document_id": {"type": "string"},
+    "attempt_no": {"type": "integer", "minimum": 1},
+    "generated_at": {"type": "string"},
+    "raw_artifact_id": {"type": ["string", "null"]},
+    "needs_review": {"type": "boolean"},
+    "provider": {
+      "type": "object",
+      "required": ["name", "api_version", "classifier_analyzer_id", "extractor_analyzer_id", "config_version", "config_hash", "operation_id", "simulated"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"const": "azure-content-understanding"},
+        "api_version": {"type": "string"},
+        "classifier_analyzer_id": {"type": "string"},
+        "extractor_analyzer_id": {"type": ["string", "null"]},
+        "config_version": {"type": "string"},
+        "config_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "operation_id": {"type": ["string", "null"]},
+        "simulated": {"type": "boolean"}
+      }
+    },
+    "classification": {
+      "type": "object",
+      "required": ["category", "provider_category", "status", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "category": {"type": ["string", "null"]},
+        "provider_category": {"type": ["string", "null"]},
+        "status": {"enum": ["classified", "other", "unrecognized_category", "not_classified"]},
+        "confidence": {"type": "null", "description": "Always null: the GA service returns no category-level confidence when segmentation is off."}
+      }
+    },
+    "text": {
+      "type": "object",
+      "required": ["artifact_id", "status", "char_count", "page_count"],
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {"type": ["string", "null"]},
+        "status": {"enum": ["present", "missing"]},
+        "char_count": {"type": "integer", "minimum": 0},
+        "page_count": {"type": ["integer", "null"], "minimum": 1}
+      }
+    },
+    "fields": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["status", "type", "value", "confidence", "source", "provider_type"],
+        "additionalProperties": false,
+        "properties": {
+          "status": {"enum": ["present", "absent", "invalid"]},
+          "type": {"enum": ["string", "date", "number", "integer", "boolean", "array"]},
+          "value": {},
+          "confidence": {"type": ["number", "null"]},
+          "source": {"type": ["string", "null"]},
+          "provider_type": {"type": ["string", "null"]}
+        },
+        "allOf": [
+          {"if": {"properties": {"status": {"enum": ["absent", "invalid"]}}}, "then": {"properties": {"value": {"type": "null"}}}}
+        ]
+      }
+    },
+    "flags": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["code", "severity", "field", "message"],
+        "additionalProperties": false,
+        "properties": {
+          "code": {"type": "string"},
+          "severity": {"enum": ["info", "warning"]},
+          "field": {"type": ["string", "null"]},
+          "message": {"type": "string"}
+        }
+      }
+    }
+  }
+}

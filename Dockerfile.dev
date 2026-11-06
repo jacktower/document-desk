@@ -1,0 +1,27 @@
+# Recreates the DEVELOPMENT/TEST environment (not a deployment image; the runtime image is ./Dockerfile).
+# Provides: Python 3.12 + the project with dev extras, a real SQL Server 2022 Developer engine + ODBC Driver 18 for the
+# integration tests, and Node 20 + the Azurite blob emulator for the optional adapter test.
+FROM codex-base
+USER root
+ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC ACCEPT_EULA=Y
+RUN apt-get update && apt-get install -y curl ca-certificates gnupg xz-utils unixodbc-dev python3-venv \
+    && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
+    && curl -fsSL https://packages.microsoft.com/config/ubuntu/22.04/mssql-server-2022.list | sed 's/deb \[/deb [signed-by=\/usr\/share\/keyrings\/microsoft-prod.gpg /' > /etc/apt/sources.list.d/mssql-server.list \
+    && curl -fsSL https://packages.microsoft.com/config/ubuntu/22.04/prod.list | sed 's/deb \[/deb [signed-by=\/usr\/share\/keyrings\/microsoft-prod.gpg /' > /etc/apt/sources.list.d/microsoft-prod.list \
+    && apt-get update && apt-get install -y mssql-server=16.0.4305.5-1 msodbcsql18=18.7.1.1-1 \
+    && rm -rf /var/lib/apt/lists/*
+# Node 20 (the distro Node is too old for Azurite) and Azurite, kept outside the system paths
+RUN mkdir -p /opt/node20 /opt/azurite \
+    && curl -fsSL https://nodejs.org/dist/v20.18.1/node-v20.18.1-linux-x64.tar.xz | tar -xJ -C /opt/node20 --strip-components=1 \
+    && PATH=/opt/node20/bin:$PATH npm install -g azurite --prefix /opt/azurite
+ENV PATH=/opt/node20/bin:/opt/azurite/bin:$PATH
+# Python 3.12 via uv, project venv with dev extras
+RUN pip install uv
+WORKDIR /repo
+COPY . /repo
+RUN uv venv --python 3.12 .venv && uv pip install -p .venv/bin/python -e '.[dev]'
+# Start the engine (long-running) and run the tests, as in README "Run the tests":
+#   export MSSQL_SA_PASSWORD='<policy-compliant password>' MSSQL_PID=Developer MSSQL_MEMORY_LIMIT_MB=2048
+#   sudo --preserve-env -u mssql /opt/mssql/bin/sqlservr &
+#   azurite-blob --skipApiVersionCheck --blobPort 10010 --location /tmp/azurite-data --silent &
+#   TEST_SQL_SERVER=127.0.0.1,1433 TEST_SQL_PASSWORD=$MSSQL_SA_PASSWORD AZURITE_BLOB_URL=http://127.0.0.1:10010 .venv/bin/python -m pytest

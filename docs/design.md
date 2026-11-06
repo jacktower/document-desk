@@ -400,3 +400,16 @@ Load/stress tests, repeated process-kill experiments, multi-configuration matric
 7. Throttling quota (documented 1000 pages/min, 3000 ops/min per resource) is far above this app's expected use; `CU_MAX_CONCURRENCY` caps it anyway.
 8. Single-password auth with a per-process login throttle is brute-forceable across replicas at a slow rate; the Key Vault password should be long/random. Accepted given the contract's no-user-management scope.
 9. Replay is offered only for `failed` documents in v1 (contract wording); extending to `completed`/`rejected` is a small change in the replay guard.
+
+## 16. Implementation notes and deviations from this design
+
+The code follows this design. Where it differs, the difference is deliberate and recorded here.
+
+1. **No broker-scheduled messages.** Retry back-off is held in the SQL outbox (`outbox.not_before`; the dispatcher only claims rows that are due) instead of Service Bus scheduled enqueue. SQL stays the single clock and a scheduled message can never be lost. Consequence: Service Bus Standard is still recommended (duplicate detection setting) but scheduling is not required.
+2. **Fakes are injected, not selected by environment.** There is no `BLOB_BACKEND` / `BROKER_BACKEND` setting; `Runtime` takes its collaborators as arguments and the fakes live only in `devtools/` (excluded from the image), so a production process cannot select them. `CU_AUTH=none`, `SQL_AUTH=sql_password`, `SQL_TRUST_SERVER_CERTIFICATE` and `COOKIE_SECURE=false` remain as dev-only environment switches and are rejected when `APP_ENV=prod`.
+3. **Unexpected handler exceptions are recorded, not only abandoned.** A bug in a handler becomes a retryable `INTERNAL_ERROR` try (sanitised message), so it is bounded and visible; abandon-and-redeliver is kept only for the case where SQL itself cannot be reached. Added codes: `INTERNAL_ERROR`, `STORAGE_MISSING` (retryable), `ARTIFACT_MISSING`.
+4. **Column naming**: `processing_attempts.trigger_kind` (`trigger` is a reserved word); `document_results` also stores `extractor_analyzer_id` and `simulated`; `documents.page_count`; `outbox` carries `document_id/attempt_id/stage` for recovery queries.
+5. **Text artifact is optional**: if the provider returns no text no `extracted_text` artifact is written, the result says `text.status = missing`, and the `result` stage verifies only the artifacts the result row references.
+6. **Classifier items for `other`.** The normalizer accepts a category on the routed item (`input1/segment1`) or on the root item and treats a response with no category anywhere as `not_classified` (needs review). The real shape for `other` was not observed.
+7. **Dev stack location.** The local stack is `devtools/docdesk_devtools/stack.py` (one process; also simulates Event Grid by emitting an event when the web app stores an original).
+8. **Dockerfiles.** `Dockerfile` is the runtime image; `Dockerfile.dev` recreates the development environment.
