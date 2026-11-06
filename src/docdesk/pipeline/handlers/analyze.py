@@ -73,7 +73,7 @@ def _keep_failure_response(rt: Runtime, claim: repo.Claim, err: StageError, prov
                 content_type="application/octet-stream", provenance=provenance)
     try:
         write_blob(rt, rt.settings.artifacts_container, name, err.raw_response, "application/octet-stream")
-    except StageError:
+    except Exception:  # any write failure (not only StageError): the received bytes must not be dropped
         err.pending_artifacts.append({**desc, "content": err.raw_response})
         return
     err.artifacts.append(desc)

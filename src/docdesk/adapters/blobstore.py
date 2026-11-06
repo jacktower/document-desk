@@ -40,6 +40,21 @@ def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+TRANSIENT_HTTP = {408, 429, 500, 502, 503, 504}
+
+
+def _as_unavailable(e: Exception) -> "BlobUnavailable | None":
+    """Transient SDK failures (transport errors, and HTTP 408/429/5xx such as 503 ServerBusy once the SDK's own retries are
+    exhausted) become BlobUnavailable, which the pipeline treats as retryable storage trouble; anything else is left alone."""
+    from azure.core.exceptions import HttpResponseError, ServiceRequestError, ServiceResponseError
+
+    if isinstance(e, (ServiceRequestError, ServiceResponseError)):
+        return BlobUnavailable(type(e).__name__)
+    if isinstance(e, HttpResponseError) and getattr(e, "status_code", None) in TRANSIENT_HTTP:
+        return BlobUnavailable(f"HTTP {e.status_code}")
+    return None
+
+
 class AzureBlobStore:
     def __init__(self, settings: Settings, credential=None, service=None):
         from azure.storage.blob import BlobServiceClient
@@ -59,25 +74,31 @@ class AzureBlobStore:
         return self._svc.get_blob_client(container, name)
 
     def put(self, container, name, data, content_type, overwrite=False):
-        from azure.core.exceptions import ResourceExistsError, ServiceRequestError, ServiceResponseError
+        from azure.core.exceptions import ResourceExistsError
         from azure.storage.blob import ContentSettings
 
         try:
             self._blob(container, name).upload_blob(data, overwrite=overwrite, content_settings=ContentSettings(content_type=content_type))
         except ResourceExistsError as e:
             raise BlobExists(name) from e
-        except (ServiceRequestError, ServiceResponseError) as e:
-            raise BlobUnavailable(type(e).__name__) from e
+        except Exception as e:
+            u = _as_unavailable(e)
+            if u is None:
+                raise
+            raise u from e
 
     def get(self, container, name) -> bytes:
-        from azure.core.exceptions import ResourceNotFoundError, ServiceRequestError, ServiceResponseError
+        from azure.core.exceptions import ResourceNotFoundError
 
         try:
             return self._blob(container, name).download_blob().readall()
         except ResourceNotFoundError as e:
             raise BlobNotFound(name) from e
-        except (ServiceRequestError, ServiceResponseError) as e:
-            raise BlobUnavailable(type(e).__name__) from e
+        except Exception as e:
+            u = _as_unavailable(e)
+            if u is None:
+                raise
+            raise u from e
 
     def stream(self, container, name, chunk_size=1 << 20):
         from azure.core.exceptions import ResourceNotFoundError
@@ -86,17 +107,25 @@ class AzureBlobStore:
             dl = self._blob(container, name).download_blob()
         except ResourceNotFoundError as e:
             raise BlobNotFound(name) from e
+        except Exception as e:
+            u = _as_unavailable(e)
+            if u is None:
+                raise
+            raise u from e
         yield from dl.chunks()
 
     def head(self, container, name) -> BlobInfo:
-        from azure.core.exceptions import ResourceNotFoundError, ServiceRequestError, ServiceResponseError
+        from azure.core.exceptions import ResourceNotFoundError
 
         try:
             p = self._blob(container, name).get_blob_properties()
         except ResourceNotFoundError as e:
             raise BlobNotFound(name) from e
-        except (ServiceRequestError, ServiceResponseError) as e:
-            raise BlobUnavailable(type(e).__name__) from e
+        except Exception as e:
+            u = _as_unavailable(e)
+            if u is None:
+                raise
+            raise u from e
         return BlobInfo(p.size, p.etag.strip('"') if p.etag else None, p.content_settings.content_type)
 
     def exists(self, container, name) -> bool:

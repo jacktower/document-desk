@@ -248,3 +248,49 @@ def test_failed_response_survives_a_blob_failure_at_the_moment_of_failure(rt, si
     done = rt.db.query("SELECT content, artifact_id FROM dbo.pending_artifacts")[0]
     assert done["content"] is None and str(done["artifact_id"]).lower() == str(art["artifact_id"]).lower()
     assert sim.analyze_calls == 1                            # recovered without another (billable) analysis
+
+
+def test_failed_response_survives_an_sdk_http_503_on_the_evidence_write(rt, sim):
+    """Regression (F-7, SDK path): the real AzureBlobStore raises an HTTP error, not BlobUnavailable, when Blob answers 503.
+    The received bytes must still be kept and later persisted, and the provider failure must stay the recorded failure."""
+    from azure.storage.blob import BlobServiceClient
+    from docdesk.adapters.blobstore import AzureBlobStore
+    from docdesk.domain.stages import BLOB_EVENTS_QUEUE, STAGE_QUEUES
+    from test_blob_http_errors import serve
+
+    srv = serve(503)
+    broken = AzureBlobStore(rt.settings, service=BlobServiceClient(account_url=f"http://127.0.0.1:{srv.server_port}", credential=None, retry_total=0))
+    fs = rt.blob
+
+    class Split:
+        """Filesystem blobs, except that writes to the artifacts container go to the (503) SDK adapter while `outage` is set."""
+        outage = False
+
+        def __getattr__(self, name):
+            return getattr(fs, name)
+
+        def put(self, container, name, data, content_type, overwrite=False):
+            if self.outage and container == rt.settings.artifacts_container:
+                return broken.put(container, name, data, content_type, overwrite)
+            return fs.put(container, name, data, content_type, overwrite)
+
+    split = Split()
+    rt.blob = split
+    try:
+        sim.script = ["failed_content"]
+        doc = upload(rt, invoice_pdf(), "a.pdf")
+        pump(rt, only={BLOB_EVENTS_QUEUE, STAGE_QUEUES["intake"]})
+        split.outage = True
+        pump(rt)
+        d = rt.db.query("SELECT status, last_error_code FROM dbo.documents WHERE document_id=?", doc)[0]
+        assert (d["status"], d["last_error_code"]) == ("failed", "PROVIDER_OPERATION_FAILED") and sim.analyze_calls == 1   # not INTERNAL_ERROR, no re-analysis
+        (pend,) = rt.db.query("SELECT * FROM dbo.pending_artifacts WHERE document_id=?", doc)
+        held = bytes(pend["content"])
+        assert json.loads(held)["status"] == "Failed"
+        assert reaper.reap_once(rt)["pending_artifacts"] == 0                       # still 503: bytes stay in SQL
+        split.outage = False
+        assert reaper.reap_once(rt)["pending_artifacts"] == 1
+        (art,) = provider_error_artifacts(rt.db, doc)
+        assert fs.get(art["container"], art["blob_name"]) == held and sim.analyze_calls == 1
+    finally:
+        srv.shutdown()
