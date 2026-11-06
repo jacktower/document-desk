@@ -72,13 +72,22 @@ def test_list_detail_original_and_artifacts_are_served_from_sql_and_blob(client,
     assert client.get(f"/api/documents/{did}/original").status_code == 401                 # originals only for signed-in operators
 
 
-def test_pagination_cursor(client, rt):
-    for i in range(3):
-        upload(rt, invoice_pdf(str(i)), f"{i}.pdf", emit_event=False)
-    p1 = client.get("/api/documents?limit=2", headers=H).json()
-    assert len(p1["items"]) == 2 and p1["next_before"]
-    p2 = client.get(f"/api/documents?limit=2&before={p1['next_before']}", headers=H).json()
-    assert len(p2["items"]) == 1 and p2["next_before"] is None
+def test_pagination_cursor_enumerates_every_row_even_when_timestamps_tie(client, rt):
+    docs = [upload(rt, invoice_pdf(str(i)), f"{i}.pdf", emit_event=False) for i in range(5)]
+    # three rows share one millisecond, two others are distinct: a timestamp-only cursor would drop tied rows at a page boundary
+    rt.db.run(lambda cur: cur.execute("UPDATE dbo.documents SET created_at='2026-01-01T00:00:00.123' WHERE document_id IN (?,?,?)", *docs[:3]))
+    rt.db.run(lambda cur: cur.execute("UPDATE dbo.documents SET created_at='2026-01-02T00:00:00.000' WHERE document_id=?", docs[3]))
+    for size in (1, 2, 3):
+        seen, cursor = [], None
+        for _ in range(10):
+            url = f"/api/documents?limit={size}" + (f"&cursor={cursor}" if cursor else "")
+            page = client.get(url, headers=H).json()
+            seen += [d["document_id"] for d in page["items"]]
+            cursor = page["next_cursor"]
+            if not cursor:
+                break
+        assert sorted(seen) == sorted(docs) and len(seen) == len(set(seen)), size
+    assert client.get("/api/documents?cursor=garbage", headers=H).status_code == 400
 
 
 def test_diagnostics_show_failures_and_backlog(client, rt, sim):

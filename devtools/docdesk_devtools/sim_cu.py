@@ -101,6 +101,7 @@ class SimulatedCu:
         self.put_calls: list[str] = []
         self.calls: list[tuple[str, str]] = []           # (method, path) of every request
         self.require_defaults_for_put = True
+        self.analyzer_status: dict[str, str | list[str]] = {}   # analyzer id -> status, or a sequence (last value repeats) served on GET
         self.field_overrides: dict = {}                  # merged into the routed item's fields (scripted values for tests)
 
     # -- helpers --------------------------------------------------------------------------------
@@ -147,7 +148,10 @@ class SimulatedCu:
             if method == "GET":
                 if aid not in self.analyzers:
                     return self._err(start, 404, "NotFound")
-                return self._resp(start, 200, {"analyzerId": aid, "status": "ready", **self._strip_empty(self.analyzers[aid])})
+                st = self.analyzer_status.get(aid, "ready")
+                if isinstance(st, list):
+                    st = st.pop(0) if len(st) > 1 else st[0]
+                return self._resp(start, 200, {"analyzerId": aid, "status": st, **self._strip_empty(self.analyzers[aid])})
             if method == "PUT":
                 self.put_calls.append(aid)
                 if self.require_defaults_for_put and not (self.defaults and "prebuilt-analyzer-embedding" in self.defaults):

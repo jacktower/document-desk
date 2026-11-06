@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import date, datetime
 
 from .connection import Database
@@ -24,7 +25,9 @@ def _doc_out(r: dict) -> dict:
 
 
 def list_documents(db: Database, *, status: str | None = None, category: str | None = None, q: str | None = None,
-                   limit: int = 50, before: str | None = None) -> dict:
+                   limit: int = 50, cursor: str | None = None) -> dict:
+    """Newest first. The cursor is `<created_at>|<document_id>` of the last row returned, matching the sort key
+    (created_at DESC, document_id ASC) exactly, so rows that share a timestamp are neither skipped nor repeated."""
     limit = max(1, min(limit, 200))
     where, params = [], []
     if status:
@@ -36,15 +39,31 @@ def list_documents(db: Database, *, status: str | None = None, category: str | N
     if q:
         where.append("original_filename LIKE ? ESCAPE '\\'")
         params.append("%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
-    if before:
-        where.append("created_at < ?")
-        params.append(before.rstrip("Z"))
+    if cursor:
+        ts, doc_id = parse_cursor(cursor)
+        where.append("(created_at < CAST(? AS DATETIME2(3)) OR (created_at = CAST(? AS DATETIME2(3)) AND document_id > CAST(? AS UNIQUEIDENTIFIER)))")
+        params.extend([ts, ts, doc_id])
     sql = f"SELECT TOP ({limit + 1}) {DOC_COLUMNS} FROM dbo.documents" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY created_at DESC, document_id"
     rows = db.query(sql, *params)
     more = len(rows) > limit
     rows = rows[:limit]
     items = [_doc_out(r) for r in rows]
-    return {"items": items, "next_before": items[-1]["created_at"] if more and items else None}
+    nxt = f"{items[-1]['created_at']}|{items[-1]['document_id']}" if more and items else None
+    return {"items": items, "next_cursor": nxt}
+
+
+class BadCursor(ValueError):
+    pass
+
+
+def parse_cursor(cursor: str) -> tuple[str, str]:
+    try:
+        ts, doc_id = cursor.split("|", 1)
+        ts = ts.rstrip("Z")
+        datetime.fromisoformat(ts)
+        return ts, str(uuid.UUID(doc_id))
+    except ValueError:
+        raise BadCursor("malformed cursor") from None
 
 
 def get_document(db: Database, document_id: str) -> dict | None:

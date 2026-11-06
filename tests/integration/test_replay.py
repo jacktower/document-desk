@@ -154,3 +154,24 @@ def test_replay_endpoint_conflicts_and_success(rt, sim, settings):
     assert detail["status"] == "completed" and [a["attempt_no"] for a in detail["attempts"]] == [1, 2]
     assert detail["attempts"][0]["status"] == "failed" and detail["attempts"][1]["trigger_kind"] == "replay"
     assert detail["attempts"][0]["stages"][1]["tries_detail"][0]["error_code"] == "PROVIDER_UNAVAILABLE"      # evidence still visible
+
+
+@pytest.mark.parametrize("from_stage", [None, "result"])
+def test_replay_of_a_result_stage_failure_completes_after_storage_recovers(rt, sim, from_stage):
+    """Regression: the carried `index` stage must make the earlier result row visible to the replayed `result` stage."""
+    from docdesk.domain.stages import BLOB_EVENTS_QUEUE, STAGE_QUEUES
+    doc = upload(rt, invoice_pdf(), "a.pdf")
+    pump(rt, only={BLOB_EVENTS_QUEUE, *(STAGE_QUEUES[s] for s in ("intake", "analyze", "index"))})
+    rt.blob.down = True                                   # storage outage while the result stage verifies its artifacts
+    pump_until_quiet(rt)
+    assert status_of(rt.db, doc) == "failed"
+    assert rt.db.scalar("SELECT last_error_code FROM dbo.documents WHERE document_id=?", doc) == "STORAGE_TRANSIENT"
+    rt.blob.down = False
+    calls, first_result = sim.analyze_calls, rt.db.scalar("SELECT current_result_id FROM dbo.documents WHERE document_id=?", doc)
+    assert repo.replay_document(rt.db, doc, 1, from_stage, "storage recovered")["outcome"] == "OK"
+    pump_until_quiet(rt)
+    assert status_of(rt.db, doc) == "completed" and sim.analyze_calls == calls            # no new analysis
+    st = {(r["attempt_no"], r["stage"]): r["status"] for r in stage_rows(rt.db, doc)}
+    assert st[(2, "index")] == "carried" and st[(2, "result")] == "succeeded" and st[(1, "result")] == "failed"
+    assert counts(rt.db, doc)["document_results"] == 1                                    # referenced, not copied
+    assert rt.db.scalar("SELECT current_result_id FROM dbo.documents WHERE document_id=?", doc) == first_result

@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 
 from ...adapters.blobstore import sha256_hex
-from ...cu.analyzer_config import classifier_id
+from ...cu.analyzer_config import classifier_id, config_hash
 from ...cu.normalize import extract_text, parse_operation
 from ...db import repo_pipeline as repo
 from ...domain.errors import LeaseLost, StageError
@@ -24,8 +24,15 @@ def run(rt: Runtime, claim: repo.Claim):
         if not repo.renew_lease(rt.db, s, claim):
             raise LeaseLost()
 
-    with rt.cu_slots:  # bounded provider concurrency across this worker's threads
-        outcome = rt.cu.analyze(classifier_id(s.analyzer_config_version), data, mime, request_id, on_poll=keep_lease)
+    # what this request is actually made with; stored with the response so later stages never guess it from their own settings
+    provenance = {"api_version": s.cu_api_version, "classifier_analyzer_id": classifier_id(s.analyzer_config_version),
+                  "config_version": s.analyzer_config_version, "config_hash": config_hash(s)}
+    try:
+        with rt.cu_slots:  # bounded provider concurrency across this worker's threads
+            outcome = rt.cu.analyze(provenance["classifier_analyzer_id"], data, mime, request_id, on_poll=keep_lease)
+    except StageError as e:
+        _keep_failure_response(rt, claim, e, provenance)
+        raise
 
     text: str | None = None
     try:
@@ -44,9 +51,26 @@ def run(rt: Runtime, claim: repo.Claim):
     def effects(cur):
         repo.insert_artifact(cur, document_id=claim.document_id, attempt_id=claim.attempt_id, stage="analyze", try_no=claim.try_no,
                              kind="provider_response", container=s.artifacts_container, blob_name=raw_name,
-                             sha256=sha256_hex(outcome.raw), size=len(outcome.raw), content_type="application/json")
+                             sha256=sha256_hex(outcome.raw), size=len(outcome.raw), content_type="application/json",
+                             provenance=provenance)
         if text_bytes:
             repo.insert_artifact(cur, document_id=claim.document_id, attempt_id=claim.attempt_id, stage="analyze", try_no=claim.try_no,
                                  kind="extracted_text", container=s.artifacts_container, blob_name=text_name,
                                  sha256=sha256_hex(text_bytes), size=len(text_bytes), content_type="text/markdown; charset=utf-8")
     return effects
+
+
+def _keep_failure_response(rt: Runtime, claim: repo.Claim, err: StageError, provenance: dict) -> None:
+    """A final provider response that ended in failure (or could not be read) is evidence too: store the received bytes
+    unchanged; the runner records the artifact row in the same transaction as the failure. Best effort: if storage is down,
+    the failure itself is still recorded."""
+    if not err.raw_response:
+        return
+    name = artifact_path(claim.document_id, claim.attempt_no, claim.try_no, "provider_error.bin")
+    try:
+        write_blob(rt, rt.settings.artifacts_container, name, err.raw_response, "application/octet-stream")
+    except StageError:
+        return
+    err.artifacts.append(dict(kind="provider_error", container=rt.settings.artifacts_container, blob_name=name,
+                              sha256=sha256_hex(err.raw_response), size=len(err.raw_response),
+                              content_type="application/octet-stream", provenance=provenance))

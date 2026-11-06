@@ -205,7 +205,7 @@ def _convert(fd: R.FieldDef, pf: Any) -> FieldRow:
 
 # -- main entry point ---------------------------------------------------------------------------------------
 def normalize(raw: bytes, *, document_id: str, attempt_no: int, settings: Settings,
-              intake_page_count: int | None = None, raw_artifact_id: str | None = None,
+              intake_page_count: int | None = None, raw_artifact_id: str | None = None, provenance: dict | None = None,
               text_artifact_id: str | None = None) -> Normalized:
     doc = parse_operation(raw)
     result = doc["result"]
@@ -280,10 +280,14 @@ def normalize(raw: bytes, *, document_id: str, attempt_no: int, settings: Settin
     needs_review = (status != "classified" or any(f["code"] in ("KEY_FIELDS_ABSENT", "TEXT_MISSING", "FIELD_INVALID", "PROVIDER_WARNING",
                                                                     "PROVIDER_SHAPE_UNEXPECTED", "MULTIPLE_CATEGORIES") for f in flags))
 
-    v = settings.analyzer_config_version
+    # Provenance is the configuration the analysis was actually requested with (stored with the provider-response artifact).
+    # Only when none is supplied (unit use) does it fall back to the current settings.
+    prov = provenance or {"api_version": settings.cu_api_version, "classifier_analyzer_id": classifier_id(settings.analyzer_config_version),
+                          "config_version": settings.analyzer_config_version, "config_hash": config_hash(settings)}
+    v = prov["config_version"]
     cat_obj = R.CATEGORY_BY_NAME.get(category) if category else None
     ext_id = extractor_id(cat_obj.family, v) if (cat_obj and routed) else None
-    cls_id = result.get("analyzerId") if isinstance(result.get("analyzerId"), str) else classifier_id(v)
+    cls_id = result.get("analyzerId") if isinstance(result.get("analyzerId"), str) else prov["classifier_analyzer_id"]
     simulated = bool(doc.get("_simulated") or result.get("_simulated"))
     document = {
         "schema_version": SCHEMA_VERSION,
@@ -292,11 +296,11 @@ def normalize(raw: bytes, *, document_id: str, attempt_no: int, settings: Settin
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "provider": {
             "name": PROVIDER_NAME,
-            "api_version": result.get("apiVersion") if isinstance(result.get("apiVersion"), str) else settings.cu_api_version,
+            "api_version": result.get("apiVersion") if isinstance(result.get("apiVersion"), str) else prov["api_version"],
             "classifier_analyzer_id": cls_id,
             "extractor_analyzer_id": ext_id,
             "config_version": v,
-            "config_hash": config_hash(settings),
+            "config_hash": prov["config_hash"],
             "operation_id": doc.get("id") if isinstance(doc.get("id"), str) else None,
             "simulated": simulated,
         },

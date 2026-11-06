@@ -153,7 +153,7 @@ class CuClient:
                     status = str(doc["status"]).lower()
                 except (ValueError, KeyError, TypeError):
                     raise StageError("PROVIDER_RESPONSE_MALFORMED", "poll response is not an operation document",
-                                     http_status=resp.status_code, provider_request_id=request_id) from None
+                                     http_status=resp.status_code, provider_request_id=request_id, raw_response=raw or None) from None
                 if status == "succeeded":
                     return AnalyzeOutcome(raw, doc.get("id"), request_id)
                 if status in ("failed", "canceled", "cancelled"):
@@ -163,9 +163,10 @@ class CuClient:
                     icode = inner.get("code") if isinstance(inner, dict) else None
                     retry = status != "failed" or (icode in RETRYABLE_OPERATION_CODES or code in RETRYABLE_OPERATION_CODES)
                     raise StageError("PROVIDER_OPERATION_FAILED", f"operation {status}: {code or '-'}/{icode or '-'}",
-                                     retryable=retry, provider_request_id=request_id)
+                                     retryable=retry, provider_request_id=request_id, raw_response=raw)
                 if status not in RUNNING:
-                    raise StageError("PROVIDER_RESPONSE_MALFORMED", "unknown operation status", provider_request_id=request_id)
+                    raise StageError("PROVIDER_RESPONSE_MALFORMED", "unknown operation status", provider_request_id=request_id,
+                                     raw_response=raw)
             if time.monotonic() > deadline:
                 raise StageError("PROVIDER_TIMEOUT", f"operation not finished after {self._s.cu_poll_timeout_s}s",
                                  provider_request_id=request_id)
@@ -183,6 +184,9 @@ class CuClient:
     def _fail(what: str, resp: httpx.Response) -> CuSetupError:
         code, inner = error_codes(resp)
         return CuSetupError(f"{what}: HTTP {resp.status_code} {code or '-'}/{inner or '-'}")
+
+    def pause(self) -> None:
+        self._sleep(self._poll_min)
 
     def get_defaults(self) -> dict | None:
         """Model defaults, or None when none were ever set (a 400 with inner code DefaultsNotSet; K-011)."""

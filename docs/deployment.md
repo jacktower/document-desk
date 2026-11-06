@@ -51,7 +51,7 @@ ALTER ROLE docdesk_worker_role ADD MEMBER [<worker identity resource name>];
 * **An analyzer definition under an existing id is never changed.** To change the registry, bump `ANALYZER_CONFIG_VERSION`; `setup-analyzers` then registers a new set under new ids. Results record the analyzer ids, API version, config version and a hash of all definitions.
 * **Model defaults must exist before any analyzer can be registered.** Content Understanding rejects `prebuilt-document` based analyzers with `DefaultDeploymentModelNotFound` until the resource has default deployments for the completion model and for the embedding alias **`prebuilt-analyzer-embedding`** (even though the application does not use embeddings). `setup-analyzers` does this in a fixed order:
   1. **defaults phase** (no analyzer request is made before it passes): reads `GET /contentunderstanding/defaults` (a `400` with inner code `DefaultsNotSet` means "none yet"); if `gpt-4.1` (or `CU_COMPLETION_MODEL`) or `prebuilt-analyzer-embedding` is missing it **stops with a diagnosis** unless `--set-defaults` is given, in which case it PATCHes them from `CU_MODEL_DEPLOYMENTS` (which must contain the embedding alias) and reads them back;
-  2. **analyzer phase**: for each analyzer (extractors, then classifier) it reads the existing one; absent -> creates (`allowReplace=false`) and waits for `ready`; present and equal to the authored definition (an authored empty object equals its absence) -> skipped; present but different -> fails and tells you to bump `ANALYZER_CONFIG_VERSION`.
+  2. **analyzer phase**: for each analyzer (extractors, then classifier) it reads the existing one; absent -> creates (`allowReplace=false`) and waits for `ready`; present and equal to the authored definition (an authored empty object equals its absence) **and ready** -> skipped; present, equal but still being created -> waited for (about a minute; `--check` only reports); present, equal but `failed` -> exit 1 (an analyzer cannot be repaired under its id: delete it in the Foundry resource or bump the config version); present but different -> fails and tells you to bump `ANALYZER_CONFIG_VERSION`.
   `--check` never writes. The command is safe to repeat.
 * Example: `CU_MODEL_DEPLOYMENTS='{"gpt-4.1":"<your gpt-4.1 deployment name>","prebuilt-analyzer-embedding":"<your embedding deployment name>"}'`.
 * **Billing** (no estimate is made here): Content Understanding bills per analysed page for the document analyzers, plus token consumption on your completion and embedding deployments, plus contextualization tokens when field source/confidence estimation is on (`CU_ESTIMATE_SOURCE_CONFIDENCE`, default on). A retry after a timeout starts a new, billable analysis; retries are bounded (5 tries for `analyze`).
@@ -107,7 +107,7 @@ variable). A per-process failure throttle slows guessing; with several replicas 
 1. Provision the resources and identities in sections 1-2 (Terraform or otherwise - outside this repository).
 2. Run the **`migrate`** job (`docdesk migrate`). It is idempotent and takes a SQL application lock, so concurrent runs are safe.
 3. Create the SQL users for the `web` and `worker` identities (section 2).
-4. Run the **`setup-analyzers`** job: first `docdesk setup-analyzers --check` (read-only), then `docdesk setup-analyzers --set-defaults` (with `CU_MODEL_DEPLOYMENTS` set) the first time, plain `docdesk setup-analyzers` afterwards. Exit code 0 = ready, 2 = a prerequisite (model defaults / configuration) is missing, 1 = an analyzer problem. The output names the missing item and the fix.
+4. Run the **`setup-analyzers`** job: first `docdesk setup-analyzers --check` (read-only), then `docdesk setup-analyzers --set-defaults` (with `CU_MODEL_DEPLOYMENTS` set) the first time, plain `docdesk setup-analyzers` afterwards. Exit code 0 = every analyzer is registered **and ready**, 2 = a prerequisite (model defaults / configuration) is missing, 1 = an analyzer problem. The output names the missing item and the fix.
 5. Start `worker`, then `web` (either order works; the outbox holds work until the worker is up).
 6. Run the smoke test (section 7).
 
@@ -123,8 +123,8 @@ CU_ENDPOINT=https://<foundry endpoint> docdesk smoke --direct-cu --docs testdocs
 ```
 
 It uploads an invoice, an NDA, an unrelated flyer and an invalid file, polls until each is terminal, and prints for each: status,
-category, provider/API/analyzer/config versions, the fields found and not found, the size of the retained raw provider response, and the stage timeline. It **fails** if any
-result is marked simulated, if a valid document does not complete, if the raw response was not retained, or if anonymous access to the
+category, provider/API/analyzer/config versions, the fields found and not found, the size of the retained raw provider response, and the stage timeline. It **fails** if a required test file is missing, if fewer than two valid documents complete with a result and a retained raw provider response, if any
+result is marked simulated, if a valid document does not complete or completes without a result, or if anonymous access to the
 API is not refused. It never asserts a particular classification: results are model-dependent. The same check is available as
 `DOCDESK_LIVE=1 LIVE_BASE_URL=... LIVE_OPERATOR_PASSWORD=... pytest tests/live`. Then inspect the documents in the web UI and the `artifacts` container.
 

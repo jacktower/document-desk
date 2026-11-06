@@ -13,10 +13,17 @@ TERMINAL = {"completed", "failed", "rejected", "upload_failed"}
 DEFAULT_FILES = ["invoice_northwind.pdf", "nda_fabrikam.pdf", "other_bake_sale_flyer.pdf", "invalid_text_renamed.pdf"]
 
 
-def run_smoke(base_url: str, password: str, docs_dir: Path, files: list[str] | None = None, timeout_s: int = 600, out=print) -> int:
+MIN_VALID_DOCUMENTS = 2  # acceptance: documents of at least two supported types are processed
+REJECT_PREFIXES = ("invalid", "empty", "unsupported", "corrupt", "oversized")
+
+
+def run_smoke(base_url: str, password: str, docs_dir: Path, files: list[str] | None = None, timeout_s: int = 600, out=print,
+              transport: httpx.BaseTransport | None = None) -> int:
+    """`transport` exists so the checker itself can be tested without a network."""
     base = base_url.rstrip("/")
     ok = True
-    with httpx.Client(base_url=base, headers={"Authorization": f"Bearer {password}"}, timeout=60.0) as c:
+    valid_with_evidence = 0
+    with httpx.Client(base_url=base, headers={"Authorization": f"Bearer {password}"}, timeout=60.0, transport=transport) as c:
         r = c.get("/healthz")
         out(f"healthz: {r.status_code}")
         r = c.get("/api/documents?limit=1")
@@ -24,16 +31,18 @@ def run_smoke(base_url: str, password: str, docs_dir: Path, files: list[str] | N
         if r.status_code != 200:
             out("FAIL: the API did not accept the operator password")
             return 1
-        anon = httpx.get(base + "/api/documents", timeout=30.0)
+        with httpx.Client(base_url=base, timeout=30.0, transport=transport) as anon_client:
+            anon = anon_client.get("/api/documents")
         out(f"anonymous API access refused: {anon.status_code == 401}")
         ok &= anon.status_code == 401
         pending: dict[str, str] = {}
         for name in files or DEFAULT_FILES:
             p = docs_dir / name
             if not p.is_file():
-                out(f"SKIP {name}: not found in {docs_dir}")
+                out(f"FAIL {name}: required test file not found in {docs_dir} (generate with tools/gen_testdocs.py)")
+                ok = False
                 continue
-            expect_reject = name.startswith(("invalid", "empty", "unsupported", "corrupt", "oversized"))
+            expect_reject = name.startswith(REJECT_PREFIXES)
             with p.open("rb") as f:
                 resp = c.post("/api/documents", files={"file": (name, f, "application/octet-stream")})
             if resp.status_code == 202:
@@ -62,8 +71,9 @@ def run_smoke(base_url: str, password: str, docs_dir: Path, files: list[str] | N
         for did, d in done.items():
             fname = d["original_filename"]
             res = d.get("result")
-            expect_reject = fname.startswith(("invalid", "empty", "unsupported", "corrupt", "oversized"))
+            expect_reject = fname.startswith(REJECT_PREFIXES)
             out(f"--- {fname}: status={d['status']} attempts={len(d['attempts'])}")
+            evidence_ok = False
             if res:
                 present = [f["name"] for f in res["fields"] if f["status"] == "present"]
                 absent = [f["name"] for f in res["fields"] if f["status"] != "present"]
@@ -73,7 +83,8 @@ def run_smoke(base_url: str, password: str, docs_dir: Path, files: list[str] | N
                 out(f"    fields present ({len(present)}): {', '.join(present) or '-'}")
                 out(f"    fields not found ({len(absent)}): {', '.join(absent) or '-'}")
                 out(f"    raw provider response artifact: {raw['size_bytes'] if raw else 'MISSING'} bytes; simulated={res['provider']['simulated']}")
-                if res["provider"]["simulated"] or raw is None:
+                evidence_ok = not res["provider"]["simulated"] and raw is not None
+                if not evidence_ok:
                     out("    FAIL: result is simulated or the provider response was not retained")
                     ok = False
             for a in d["attempts"]:
@@ -86,6 +97,15 @@ def run_smoke(base_url: str, password: str, docs_dir: Path, files: list[str] | N
             elif d["status"] != "completed":
                 out(f"    FAIL: expected completed, got {d['status']} ({d.get('last_error_code')})")
                 ok = False
+            elif res is None:
+                out("    FAIL: the document is completed but has no result")
+                ok = False
+            elif evidence_ok:
+                valid_with_evidence += 1
+    if valid_with_evidence < MIN_VALID_DOCUMENTS:
+        out(f"FAIL: only {valid_with_evidence} valid document(s) completed with a real result and retained provider response; "
+            f"at least {MIN_VALID_DOCUMENTS} are required")
+        ok = False
     out("SMOKE " + ("PASSED" if ok else "FAILED"))
     return 0 if ok else 1
 

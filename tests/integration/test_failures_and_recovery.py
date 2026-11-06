@@ -185,3 +185,37 @@ def test_missing_original_at_intake_retries_then_fails(rt):
     pump_until_quiet(rt)
     assert status_of(rt.db, doc) == "failed" and stage(rt.db, doc, "intake")["tries"] == 3
     assert rt.db.scalar("SELECT last_error_code FROM dbo.documents WHERE document_id=?", doc) == "STORAGE_MISSING"
+
+
+def provider_error_artifacts(db, doc):
+    return db.query("SELECT a.*, t.outcome FROM dbo.artifacts a JOIN dbo.stage_tries t ON t.attempt_id=a.attempt_id AND t.stage=a.stage AND t.try_no=a.try_no "
+                    "WHERE a.document_id=? AND a.kind='provider_error' ORDER BY a.try_no", doc)
+
+
+def test_final_failed_provider_response_is_retained_byte_for_byte(rt, sim):
+    """Regression: the unmodified final operation response of a failed analysis is an addressable artifact."""
+    sim.script = ["failed_content"]
+    doc = upload(rt, invoice_pdf(), "a.pdf")
+    pump_until_quiet(rt)
+    assert status_of(rt.db, doc) == "failed"
+    (art,) = provider_error_artifacts(rt.db, doc)
+    stored = rt.blob.get(art["container"], art["blob_name"])
+    op_id = json.loads(stored)["id"]
+    expected = json.dumps({"id": op_id, "status": "Failed", "error": {"code": "InvalidRequest", "innererror": {"code": "InvalidContent"}}}).encode()
+    assert stored == expected and art["outcome"] == "terminal_error" and art["size_bytes"] == len(expected)
+    from docdesk.adapters.blobstore import sha256_hex
+    assert art["sha256"].lower() == sha256_hex(expected) and json.loads(art["provenance_json"])["config_version"] == "1"
+    assert not [r for r in stage_rows(rt.db, doc) if r["stage"] == "index"]               # a failed analysis never advances to indexing
+
+
+def test_unreadable_final_response_and_retried_failures_keep_their_evidence_and_later_success_is_used(rt, sim):
+    sim.script = ["malformed", "failed_transient"]
+    doc = upload(rt, invoice_pdf(), "a.pdf")
+    pump_until_quiet(rt)
+    assert status_of(rt.db, doc) == "completed"
+    arts = provider_error_artifacts(rt.db, doc)
+    assert [a["outcome"] for a in arts] == ["retryable_error", "retryable_error"]
+    assert rt.blob.get(arts[0]["container"], arts[0]["blob_name"]) == b"<html>not json</html>"
+    assert json.loads(rt.blob.get(arts[1]["container"], arts[1]["blob_name"]))["status"] == "Failed"
+    assert rt.db.scalar("SELECT category FROM dbo.documents WHERE document_id=?", doc) == "invoice"      # indexed from the successful response
+    assert rt.db.scalar("SELECT COUNT(*) FROM dbo.artifacts WHERE document_id=? AND kind='provider_response'", doc) == 1

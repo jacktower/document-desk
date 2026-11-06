@@ -64,3 +64,41 @@ def test_too_many_pages_rejected(rt, testdocs, settings):
     pump(rt)
     assert rt.db.scalar("SELECT last_error_code FROM dbo.documents WHERE document_id=?", doc) == "INPUT_TOO_MANY_PAGES"
     assert status_of(rt.db, doc) == "rejected"
+
+
+def test_provenance_is_the_analysis_configuration_not_the_indexing_workers(rt, sim):
+    """Regression: a rollout between analyze and index (or an index replay later) must not rewrite provenance."""
+    from docdesk.cu import analyzer_config as AC
+    from docdesk.domain.stages import BLOB_EVENTS_QUEUE, STAGE_QUEUES
+    s1 = rt.settings
+    v1_hash = AC.config_hash(s1)
+    doc = upload(rt, __import__("helpers").invoice_pdf(), "a.pdf")
+    pump(rt, only={BLOB_EVENTS_QUEUE, STAGE_QUEUES["intake"], STAGE_QUEUES["analyze"]})
+    calls = sim.analyze_calls
+    object.__setattr__(s1, "analyzer_config_version", "2")                         # the rollout happens here
+    assert AC.config_hash(s1) != v1_hash
+    pump(rt)
+    res = rt.db.query("SELECT * FROM dbo.document_results WHERE document_id=?", doc)[0]
+    assert (res["analyzer_id"], res["extractor_analyzer_id"], res["analyzer_config_version"], res["analyzer_config_hash"]) == \
+           ("docdesk-classifier-v1", "docdesk-transaction-v1", "1", v1_hash)
+    art = rt.db.query("SELECT container, blob_name FROM dbo.artifacts WHERE document_id=? AND kind='normalized_result'", doc)[0]
+    prov = __import__("json").loads(rt.blob.get(art["container"], art["blob_name"]))["provider"]
+    assert (prov["extractor_analyzer_id"], prov["config_version"], prov["config_hash"]) == ("docdesk-transaction-v1", "1", v1_hash)
+    assert sim.analyze_calls == calls                                                # nothing was re-analysed under v2
+
+
+def test_replayed_index_reuses_old_response_with_its_original_provenance(rt, sim):
+    from docdesk.cu import analyzer_config as AC
+    from docdesk.db import repo_pipeline as repo
+    doc = upload(rt, __import__("helpers").invoice_pdf(), "a.pdf")
+    pump(rt)
+    v1_hash = AC.config_hash(rt.settings)
+    object.__setattr__(rt.settings, "analyzer_config_version", "2")
+    rt.db.run(lambda cur: cur.execute("UPDATE dbo.documents SET status='failed' WHERE document_id=?", doc))
+    rt.db.run(lambda cur: cur.execute("UPDATE dbo.stage_states SET status='failed' WHERE document_id=? AND stage='result'", doc))
+    rt.db.run(lambda cur: cur.execute("UPDATE dbo.processing_attempts SET status='failed' WHERE document_id=?", doc))
+    assert repo.replay_document(rt.db, doc, 1, "index", None)["outcome"] == "OK"
+    pump_until_quiet(rt)
+    rows = rt.db.query("SELECT r.analyzer_config_version v, r.analyzer_config_hash h, a.attempt_no FROM dbo.document_results r "
+                       "JOIN dbo.processing_attempts a ON a.attempt_id=r.attempt_id WHERE r.document_id=? ORDER BY a.attempt_no", doc)
+    assert [(r["v"], r["h"]) for r in rows] == [("1", v1_hash)] * 2 and len(rows) == 2

@@ -29,8 +29,11 @@ def build_api_router(ctx) -> APIRouter:
 
     @r.get("/documents")
     def list_documents(status: str | None = None, category: str | None = None, q: str | None = None, limit: int = 50,
-                       before: str | None = None):
-        return repo_read.list_documents(db, status=status, category=category, q=q, limit=limit, before=before)
+                       cursor: str | None = None):
+        try:
+            return repo_read.list_documents(db, status=status, category=category, q=q, limit=limit, cursor=cursor)
+        except repo_read.BadCursor:
+            raise HTTPException(400, {"code": "BAD_CURSOR", "message": "the cursor is not one returned by this API"}) from None
 
     @r.post("/documents", status_code=202)
     def upload(request: Request, file: UploadFile):
@@ -71,7 +74,7 @@ def build_api_router(ctx) -> APIRouter:
         a = repo_read.get_artifact(db, _uuid(document_id), _uuid(artifact_id))
         if a is None:
             raise HTTPException(404, {"code": "NOT_FOUND", "message": "artifact not found"})
-        ext = {"provider_response": "provider_response.json", "extracted_text": "extracted_text.md", "normalized_result": "normalized_result.json"}.get(a["kind"], "artifact")
+        ext = {"provider_response": "provider_response.json", "extracted_text": "extracted_text.md", "provider_error": "provider_error_response.bin", "normalized_result": "normalized_result.json"}.get(a["kind"], "artifact")
         return _stream(blob, a["container"], a["blob_name"], a["content_type"] or "application/octet-stream",
                        _content_disposition("attachment", f"{str(a['document_id']).lower()}-a{a['try_no'] or 0}-{ext}"))
 

@@ -36,6 +36,7 @@ class StageError(Exception):
         http_status: int | None = None,
         retry_after_s: float | None = None,
         provider_request_id: str | None = None,
+        raw_response: bytes | None = None,
     ):
         super().__init__(f"{code}: {message}")
         self.code = code
@@ -45,6 +46,8 @@ class StageError(Exception):
         self.http_status = http_status
         self.retry_after_s = retry_after_s
         self.provider_request_id = provider_request_id
+        self.raw_response = raw_response          # final provider bytes received before the failure, if any
+        self.artifacts: list[dict] = []           # descriptors of artifacts stored for this failure (filled by the stage handler)
 
 
 class LeaseLost(Exception):

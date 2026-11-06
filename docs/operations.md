@@ -18,7 +18,7 @@ Sender role on the worker identity); they are delivered automatically when the b
 |---|---|---|
 | `PROVIDER_THROTTLED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_TIMEOUT`, `PROVIDER_RESPONSE_MALFORMED` | Transient provider problems; retried with back-off (`min(300 s, 5 s * 2^(try-1))` +/-20 %, Retry-After honoured) up to the stage's `MAX_TRIES`, then the document is `failed` | If exhausted: fix/wait, then replay |
 | `PROVIDER_CONFIGURATION` | 401/403/404 or `DefaultDeploymentModelNotFound`/`DefaultsNotSet`: role, endpoint, analyzer or model-default problem | Fix per [deployment.md](deployment.md) (`docdesk setup-analyzers --check`), then replay |
-| `PROVIDER_REQUEST_REJECTED`, `PROVIDER_OPERATION_FAILED` | The service refused the content or the operation failed for a content reason | Inspect the document; usually not replayable to success |
+| `PROVIDER_REQUEST_REJECTED`, `PROVIDER_OPERATION_FAILED` | The service refused the content or the operation failed for a content reason | Inspect the document and the `provider_error` artifact (the service's final response, downloadable from the document page); usually not replayable to success |
 | `PROVIDER_RESULT_UNUSABLE` | The provider returned no usable contents (index stage) | Inspect the stored raw response artifact |
 | `INPUT_UNSUPPORTED/CORRUPT/TOO_LARGE/TOO_MANY_PAGES` | Intake rejected the file (document status `rejected`, final) | Upload a corrected file |
 | `STORAGE_TRANSIENT`, `STORAGE_MISSING`, `SQL_TRANSIENT`, `INTERNAL_ERROR` | Infrastructure or unexpected error; retried, bounded | If exhausted: check dependencies, then replay |
@@ -29,7 +29,7 @@ Sender role on the worker identity); they are delivered automatically when the b
 ## Replay
 
 A document with status `failed` shows a **Replay** control (or `POST /api/documents/{id}/replay`, body `{"from_stage": "...", "reason": "..."}`;
-both optional). Replay creates **attempt n+1**; earlier attempts, tries, results and artifacts are never changed or deleted. Stages
+both optional). Replay creates **attempt n+1** (the document list API pages with an opaque `cursor`/`next_cursor`); earlier attempts, tries, results and artifacts are never changed or deleted. Stages
 before the replay point are *carried* by reference (for example `index` can be replayed from the stored provider response without a
 new, billable analysis). Two simultaneous replays of the same document: one wins, the other gets `409`. `rejected` and
 `completed` documents are not replayable in this version.

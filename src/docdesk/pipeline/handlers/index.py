@@ -20,11 +20,14 @@ def run(rt: Runtime, claim: repo.Claim):
     raw = read_blob(rt, raw_art["container"], raw_art["blob_name"], missing_code="ARTIFACT_MISSING")
     if raw_art["sha256"] and sha256_hex(raw) != raw_art["sha256"].lower():
         raise StageError("ARTIFACT_MISSING", "provider response artifact hash mismatch", retryable=False)
+    if not raw_art.get("provenance_json"):
+        raise StageError("ARTIFACT_MISSING", "provider response artifact has no recorded analysis provenance", retryable=False)
+    provenance = json.loads(raw_art["provenance_json"])
     text_art = repo.resolve_artifact(rt.db, claim.attempt_id, "extracted_text")
     result_id = repo.new_id()
 
     n = normalize(raw, document_id=claim.document_id, attempt_no=claim.attempt_no, settings=s,
-                  intake_page_count=doc.get("page_count"),
+                  intake_page_count=doc.get("page_count"), provenance=provenance,
                   raw_artifact_id=str(raw_art["artifact_id"]).lower(),
                   text_artifact_id=str(text_art["artifact_id"]).lower() if text_art else None)
     n.document["result_id"] = result_id

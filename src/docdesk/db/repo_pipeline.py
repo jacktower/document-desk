@@ -192,6 +192,7 @@ def record_failure(db: Database, claim: Claim, err: StageError, delay_s: int) ->
             if row is None:
                 return "lease_lost"
             _close_try(cur, claim, "retryable_error", err)
+            _failure_artifacts(cur, claim, err)
             add_outbox(cur, STAGE_QUEUES[claim.stage], stage_message(claim.document_id, claim.attempt_id, claim.stage),
                        claim.document_id, claim.attempt_id, claim.stage, not_before=row[0])
             return "retry"
@@ -203,6 +204,7 @@ def record_failure(db: Database, claim: Claim, err: StageError, delay_s: int) ->
         if cur.rowcount != 1:
             return "lease_lost"
         _close_try(cur, claim, "terminal_error", err)
+        _failure_artifacts(cur, claim, err)
         doc_status = "rejected" if err.rejects_document else "failed"
         _fail_attempt(cur, claim.document_id, claim.attempt_id, claim.attempt_no, doc_status, err.code, err.message)
         return doc_status
@@ -329,12 +331,20 @@ def mark_dispatch_failed(db: Database, outbox_id: str, error_class: str, attempt
 
 # -- artifact helpers -----------------------------------------------------------------------------
 def insert_artifact(cur, *, document_id: str, attempt_id: str | None, stage: str | None, try_no: int | None, kind: str,
-                    container: str, blob_name: str, sha256: str, size: int, content_type: str) -> str:
+                    container: str, blob_name: str, sha256: str, size: int, content_type: str,
+                    provenance: dict | None = None) -> str:
     aid = new_id()
     cur.execute(
-        "INSERT dbo.artifacts (artifact_id, document_id, attempt_id, stage, try_no, kind, container, blob_name, sha256, size_bytes, content_type) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?)", aid, document_id, attempt_id, stage, try_no, kind, container, blob_name, sha256, size, content_type)
+        "INSERT dbo.artifacts (artifact_id, document_id, attempt_id, stage, try_no, kind, container, blob_name, sha256, size_bytes, "
+        "content_type, provenance_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", aid, document_id, attempt_id, stage, try_no, kind, container,
+        blob_name, sha256, size, content_type, json.dumps(provenance, sort_keys=True) if provenance else None)
     return aid
+
+
+def _failure_artifacts(cur, claim: "Claim", err: StageError) -> None:
+    """Evidence kept with the failure: the provider's final response bytes, stored unchanged by the handler."""
+    for a in err.artifacts:
+        insert_artifact(cur, document_id=claim.document_id, attempt_id=claim.attempt_id, stage=claim.stage, try_no=claim.try_no, **a)
 
 
 def resolve_artifact(db: Database, attempt_id: str, kind: str) -> dict | None:

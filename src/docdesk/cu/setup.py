@@ -10,6 +10,16 @@ from .client import CuClient, CuSetupError
 EMBEDDING_ALIAS = "prebuilt-analyzer-embedding"
 
 
+READY = {"ready", "succeeded"}
+IN_PROGRESS = {"creating", "notstarted", "running", "inprogress"}
+READY_POLLS = 30  # x the client's poll interval (2 s) = about a minute
+
+
+def _status(analyzer: dict) -> str:
+    """The service reports `status`; a response without one is treated as ready (as the worker's health probe does)."""
+    return str(analyzer.get("status", "ready")).lower()
+
+
 def required_defaults(s: Settings) -> list[str]:
     return [s.cu_completion_model, EMBEDDING_ALIAS]
 
@@ -63,7 +73,20 @@ def setup_analyzers(client: CuClient, s: Settings, *, check: bool = False, set_d
                 client.put_analyzer(aid, definition, allow_replace=False)
                 out(f"analyzer {aid}: registered and ready")
             elif AC.equal_ignoring_empty(definition, existing):
-                out(f"analyzer {aid}: skipped (already registered and matches)")
+                status = _status(existing)
+                if status in IN_PROGRESS and not check:  # an interrupted or slow registration: wait a bounded time
+                    for _ in range(READY_POLLS):
+                        client.pause()
+                        status = _status(client.get_analyzer(aid) or {})
+                        if status not in IN_PROGRESS:
+                            break
+                if status in READY:
+                    out(f"analyzer {aid}: skipped (already registered, matches and is ready)")
+                else:
+                    out(f"analyzer {aid}: matches the authored definition but is NOT READY (status: {status}). "
+                        + ("Still being created; run again shortly." if status in IN_PROGRESS else
+                           "It cannot be repaired under this id: delete it in the Foundry resource, or bump ANALYZER_CONFIG_VERSION."))
+                    rc = 1
             else:
                 out(f"analyzer {aid}: DIFFERS from the authored definition. An analyzer under an existing id is never changed; "
                     f"bump ANALYZER_CONFIG_VERSION to register a new set.")

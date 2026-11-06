@@ -187,3 +187,34 @@ def test_provider_inner_code_is_reported_on_failure():
     out = []
     assert setup_analyzers(c, s, out=out.append) == 1
     assert any("InvalidRequest/DefaultDeploymentModelNotFound" in l for l in out)
+
+
+# ---- readiness of existing, matching analyzers ---------------------------------------------------------
+def registered():
+    sim, s, c = fresh(cu_model_deployments='{"gpt-4.1":"g","prebuilt-analyzer-embedding":"e"}')
+    assert setup_analyzers(c, s, set_defaults=True, out=lambda _: None) == 0
+    return sim, s, c
+
+
+@pytest.mark.parametrize("check", [False, True])
+def test_matching_but_failed_analyzers_are_not_reported_ready(check):
+    sim, s, c = registered()
+    sim.analyzer_status = {aid: "failed" for aid in AC.all_definitions(s)}
+    out = []
+    puts, before = len(sim.put_calls), len(sim.calls)
+    assert setup_analyzers(c, s, check=check, out=out.append) == 1
+    assert sum("NOT READY (status: failed)" in l for l in out) == 6 and not any("skipped" in l for l in out)
+    assert len(sim.put_calls) == puts and not any(m in ("PUT", "PATCH") for m, _ in sim.calls[before:])    # nothing is rewritten
+
+
+def test_in_progress_analyzer_is_waited_for_in_setup_but_not_in_check():
+    sim, s, c = registered()
+    cid = AC.classifier_id("1")
+    sim.analyzer_status = {cid: ["creating", "creating", "ready"]}
+    assert setup_analyzers(c, s, out=lambda _: None) == 0                       # became ready within the bounded wait
+    sim.analyzer_status = {cid: "creating"}
+    out = []
+    assert setup_analyzers(c, s, check=True, out=out.append) == 1               # --check reports, never waits or writes
+    assert any("Still being created" in l for l in out)
+    sim.analyzer_status = {cid: "creating"}
+    assert setup_analyzers(c, s, out=out.append) == 1                           # bounded: gives up rather than hanging
