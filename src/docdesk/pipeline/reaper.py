@@ -30,9 +30,26 @@ def reap_uploads(rt: Runtime) -> int:
     return n
 
 
+def persist_pending_artifacts(rt: Runtime) -> int:
+    """Write provider evidence that could not be stored at failure time (held in SQL) to Blob and record its artifact row."""
+    n = 0
+    for p in repo.open_pending_artifacts(rt.db):
+        try:
+            rt.blob.put(p["container"], p["blob_name"], bytes(p["content"]), p["content_type"] or "application/octet-stream", overwrite=True)
+        except Exception as e:  # storage still unavailable: the bytes stay in SQL, try again next sweep
+            repo.note_pending_attempt(rt.db, p["pending_id"])
+            log("pending_artifact_write_failed", logging.WARNING, document_id=str(p["document_id"]).lower(), error_class=type(e).__name__)
+            continue
+        if repo.finish_pending_artifact(rt.db, p):
+            n += 1
+            log("pending_artifact_persisted", document_id=str(p["document_id"]).lower())
+    return n
+
+
 def reap_once(rt: Runtime) -> dict[str, int]:
     return {
         "leases": repo.reap_expired_leases(rt.db),
         "lost_events": repo.reap_lost_stage_events(rt.db, rt.settings.stage_recovery_s),
         "uploads": reap_uploads(rt),
+        "pending_artifacts": persist_pending_artifacts(rt),
     }

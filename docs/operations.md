@@ -43,6 +43,10 @@ the reaper re-enqueues runnable stages that have no pending message after `STAGE
 indicate a changed Event Grid subscription (schema/filter); arrival for an uploaded document is also recovered from the blob itself
 after `ARRIVAL_GRACE_S`.
 
+## Provider evidence held in SQL
+
+If Blob Storage is unavailable at the moment an analysis fails, the provider's final response is kept in `dbo.pending_artifacts` (committed with the failure) and the worker's reaper writes it to the `artifacts` container every `REAPER_POLL_S`, then records the normal `provider_error` artifact. Rows with `persisted_at IS NULL` that persist for long mean storage is still failing or no worker is running; no new provider call is needed.
+
 ## Routine tasks
 
 * **Rotate the operator password**: update the Key Vault secret; restart `web` (or wait 5 minutes if the app reads Key Vault directly). All sessions are invalidated.

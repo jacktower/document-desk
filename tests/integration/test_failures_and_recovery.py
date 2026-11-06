@@ -219,3 +219,32 @@ def test_unreadable_final_response_and_retried_failures_keep_their_evidence_and_
     assert json.loads(rt.blob.get(arts[1]["container"], arts[1]["blob_name"]))["status"] == "Failed"
     assert rt.db.scalar("SELECT category FROM dbo.documents WHERE document_id=?", doc) == "invoice"      # indexed from the successful response
     assert rt.db.scalar("SELECT COUNT(*) FROM dbo.artifacts WHERE document_id=? AND kind='provider_response'", doc) == 1
+
+
+def test_failed_response_survives_a_blob_failure_at_the_moment_of_failure(rt, sim):
+    """Regression: bytes already received from the provider are never lost because storage was down when the attempt failed."""
+    from docdesk.domain.stages import BLOB_EVENTS_QUEUE, STAGE_QUEUES
+    sim.script = ["failed_content"]
+    doc = upload(rt, invoice_pdf(), "a.pdf")
+    pump(rt, only={BLOB_EVENTS_QUEUE, STAGE_QUEUES["intake"]})
+    rt.blob.fail_puts = 1                                   # the write of the failure evidence fails; reads still work
+    pump(rt)
+    assert status_of(rt.db, doc) == "failed" and sim.analyze_calls == 1
+    assert provider_error_artifacts(rt.db, doc) == []        # no artifact row yet...
+    (pend,) = rt.db.query("SELECT * FROM dbo.pending_artifacts WHERE document_id=?", doc)
+    held = bytes(pend["content"])                            # ...but the exact bytes are durably held in SQL with the failure
+    assert json.loads(held)["status"] == "Failed" and pend["persisted_at"] is None
+    from docdesk.adapters.blobstore import sha256_hex
+    assert sha256_hex(held) == pend["sha256"].lower()
+
+    rt.blob.down = True                                      # storage still down: the sweep must keep the bytes
+    assert reaper.reap_once(rt)["pending_artifacts"] == 0
+    assert rt.db.scalar("SELECT COUNT(*) FROM dbo.pending_artifacts WHERE persisted_at IS NULL") == 1
+    rt.blob.down = False                                     # storage recovers
+    assert reaper.reap_once(rt)["pending_artifacts"] == 1 and reaper.reap_once(rt)["pending_artifacts"] == 0   # once only
+    (art,) = provider_error_artifacts(rt.db, doc)
+    assert rt.blob.get(art["container"], art["blob_name"]) == held and art["outcome"] == "terminal_error"
+    assert json.loads(art["provenance_json"])["config_version"] == "1"
+    done = rt.db.query("SELECT content, artifact_id FROM dbo.pending_artifacts")[0]
+    assert done["content"] is None and str(done["artifact_id"]).lower() == str(art["artifact_id"]).lower()
+    assert sim.analyze_calls == 1                            # recovered without another (billable) analysis

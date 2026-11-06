@@ -47,6 +47,7 @@ class StageError(Exception):
         self.retry_after_s = retry_after_s
         self.provider_request_id = provider_request_id
         self.raw_response = raw_response          # final provider bytes received before the failure, if any
+        self.pending_artifacts: list[dict] = []   # same, but the blob write failed: bytes are kept in SQL for later persistence
         self.artifacts: list[dict] = []           # descriptors of artifacts stored for this failure (filled by the stage handler)
 
 

@@ -57,7 +57,7 @@ def sql_database():
     c.close()
 
 
-TABLES_IN_DELETE_ORDER = ["document_fields", "document_results", "artifacts", "stage_tries", "outbox", "stage_states",
+TABLES_IN_DELETE_ORDER = ["pending_artifacts", "document_fields", "document_results", "artifacts", "stage_tries", "outbox", "stage_states",
                           "processing_attempts", "documents", "worker_heartbeats", "dependency_health"]
 
 

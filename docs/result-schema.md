@@ -51,6 +51,7 @@ Every extractor field description tells the model to leave the field empty when 
 | `document_results` | one per attempt (unique): category, classification status, provider/API/analyzer/config version and hash, operation id, `simulated`, artifact ids, page and text counts, flags (JSON) |
 | `document_fields` | one row per field applicable to the category: `status`, typed value columns (`value_text` complete string, `value_string` 400-char search key + truncation bit, `value_number`, `value_date`, `value_bool`, `value_json`), `confidence`, `source` (<= 500 chars; full value in the artifact). Indexed by `(field_name, value_date)`, `(field_name, value_number)`, `(field_name, value_string)` |
 | `outbox` | next-stage events committed with the state change; dispatched to Service Bus by the worker |
+| `pending_artifacts` | provider evidence received but not yet writable to Blob at failure time: the exact bytes are committed with the failure and the reaper writes them to the artifacts container, records the normal `provider_error` artifact row and clears the held bytes |
 | `worker_heartbeats`, `dependency_health` | operational status written by the workers |
 
 Example: invoices due in April 2026 with their totals:

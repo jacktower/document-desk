@@ -14,7 +14,7 @@ def test_migrate_on_empty_database_and_rerun_is_noop(settings):
     master.execute(f"CREATE DATABASE [{name}]")
     try:
         d = Database(dev_settings(sql_database=name))
-        assert migrate(d) == ["0001_init", "0002_artifact_provenance"]
+        assert migrate(d) == ["0001_init", "0002_artifact_provenance", "0003_pending_artifacts"]
         assert migrate(d) == []
         tables = {r["name"] for r in d.query("SELECT name FROM sys.tables")}
         assert {"documents", "processing_attempts", "stage_states", "stage_tries", "artifacts", "document_results", "document_fields",

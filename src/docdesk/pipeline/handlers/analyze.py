@@ -61,16 +61,19 @@ def run(rt: Runtime, claim: repo.Claim):
 
 
 def _keep_failure_response(rt: Runtime, claim: repo.Claim, err: StageError, provenance: dict) -> None:
-    """A final provider response that ended in failure (or could not be read) is evidence too: store the received bytes
-    unchanged; the runner records the artifact row in the same transaction as the failure. Best effort: if storage is down,
-    the failure itself is still recorded."""
+    """A final provider response that ended in failure (or could not be read) is evidence too. The received bytes are stored
+    unchanged and the runner records the artifact row in the same transaction as the failure. If Blob Storage cannot take
+    the write right now, the bytes travel with the failure into SQL (`pending_artifacts`) and the reaper writes them later:
+    received evidence is never dropped, and no new provider call is needed."""
     if not err.raw_response:
         return
     name = artifact_path(claim.document_id, claim.attempt_no, claim.try_no, "provider_error.bin")
+    desc = dict(kind="provider_error", container=rt.settings.artifacts_container, blob_name=name,
+                sha256=sha256_hex(err.raw_response), size=len(err.raw_response),
+                content_type="application/octet-stream", provenance=provenance)
     try:
         write_blob(rt, rt.settings.artifacts_container, name, err.raw_response, "application/octet-stream")
     except StageError:
+        err.pending_artifacts.append({**desc, "content": err.raw_response})
         return
-    err.artifacts.append(dict(kind="provider_error", container=rt.settings.artifacts_container, blob_name=name,
-                              sha256=sha256_hex(err.raw_response), size=len(err.raw_response),
-                              content_type="application/octet-stream", provenance=provenance))
+    err.artifacts.append(desc)

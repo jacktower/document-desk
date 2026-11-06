@@ -25,7 +25,7 @@ Content Understanding with `gpt-4.1` and `text-embedding-3-large` deployments, a
 | Evidence | Result |
 |---|---|
 | Unit tests (no services) | 84 passing |
-| Integration tests on a **real SQL Server 2022** (RCSI on, as in Azure SQL), with simulated Blob, Service Bus, Event Grid and Content Understanding | 72 passing: duplicate delivery, concurrent workers, stale leases, outbox crash windows, bounded retries, lease expiry/reaper, replay, restricted web SQL role, long values, privacy of logs |
+| Integration tests on a **real SQL Server 2022** (RCSI on, as in Azure SQL), with simulated Blob, Service Bus, Event Grid and Content Understanding | 73 passing: duplicate delivery, concurrent workers, stale leases, outbox crash windows, bounded retries, lease expiry/reaper, replay, restricted web SQL role, long values, privacy of logs |
 | Azure Blob adapter against the **Azurite emulator** | 1 passing (emulator only; managed-identity auth is not exercised) |
 | Local stack + `docdesk smoke` against it | Works; the smoke test correctly *fails* on simulated results |
 | **Real Azure Content Understanding, Event Grid, Service Bus, Blob (managed identity), Azure SQL (Entra token), Container Apps** | **Not exercised.** No Azure access was available. The live smoke test (`docdesk smoke`, `tests/live/`) exists and is documented but has never been run against Azure. The analyzer definitions have been validated only by a local model of the documented schema; the authoritative check is the first `docdesk setup-analyzers` run. |

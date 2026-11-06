@@ -345,6 +345,37 @@ def _failure_artifacts(cur, claim: "Claim", err: StageError) -> None:
     """Evidence kept with the failure: the provider's final response bytes, stored unchanged by the handler."""
     for a in err.artifacts:
         insert_artifact(cur, document_id=claim.document_id, attempt_id=claim.attempt_id, stage=claim.stage, try_no=claim.try_no, **a)
+    for a in err.pending_artifacts:  # received but not yet in Blob: committed with the failure, persisted by the reaper
+        cur.execute(
+            "INSERT dbo.pending_artifacts (pending_id, document_id, attempt_id, stage, try_no, kind, container, blob_name, content_type, "
+            "sha256, size_bytes, provenance_json, content) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            new_id(), claim.document_id, claim.attempt_id, claim.stage, claim.try_no, a["kind"], a["container"], a["blob_name"],
+            a["content_type"], a["sha256"], a["size"], json.dumps(a["provenance"], sort_keys=True) if a.get("provenance") else None,
+            a["content"])
+
+
+def open_pending_artifacts(db: Database, limit: int = 20) -> list[dict]:
+    return db.query("SELECT TOP (?) * FROM dbo.pending_artifacts WHERE persisted_at IS NULL ORDER BY created_at", limit)
+
+
+def finish_pending_artifact(db: Database, pending: dict) -> bool:
+    """After the blob is written: record the normal artifact row and clear the held bytes, once (guarded for concurrent reapers)."""
+    def _do(cur):
+        cur.execute("UPDATE dbo.pending_artifacts SET persisted_at=SYSUTCDATETIME(), content=NULL WHERE pending_id=? AND persisted_at IS NULL",
+                    pending["pending_id"])
+        if cur.rowcount != 1:
+            return False
+        aid = insert_artifact(cur, document_id=str(pending["document_id"]).lower(), attempt_id=str(pending["attempt_id"]).lower(),
+                              stage=pending["stage"], try_no=pending["try_no"], kind=pending["kind"], container=pending["container"],
+                              blob_name=pending["blob_name"], sha256=pending["sha256"], size=pending["size_bytes"],
+                              content_type=pending["content_type"], provenance=json.loads(pending["provenance_json"]) if pending["provenance_json"] else None)
+        cur.execute("UPDATE dbo.pending_artifacts SET artifact_id=? WHERE pending_id=?", aid, pending["pending_id"])
+        return True
+    return db.run(_do)
+
+
+def note_pending_attempt(db: Database, pending_id) -> None:
+    db.run(lambda cur: cur.execute("UPDATE dbo.pending_artifacts SET attempts=attempts+1 WHERE pending_id=?", pending_id))
 
 
 def resolve_artifact(db: Database, attempt_id: str, kind: str) -> dict | None:
